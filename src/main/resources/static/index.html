@@ -288,7 +288,12 @@
             log('streamLog', '❌ Conecta WebSocket primero', 'error');
             return;
         }
-        const sid = document.getElementById('streamId').value;
+        const sid = document.getElementById('streamId').value.trim();
+        if (!sid) {
+            log('streamLog', '❌ El streamId es obligatorio', 'error');
+            return;
+        }
+        document.getElementById('streamId').value = sid;
         if (streamSubscription) {
             streamSubscription.unsubscribe();
         }
@@ -324,9 +329,14 @@
     }
 
     async function startStream() {
-        const sid = document.getElementById('streamId').value;
+        const sid = document.getElementById('streamId').value.trim();
+        document.getElementById('streamId').value = sid;
         if (!currentUserId) {
             log('streamLog', '❌ Debes loguearte primero', 'error');
+            return;
+        }
+        if (!sid) {
+            log('streamLog', '❌ El streamId es obligatorio', 'error');
             return;
         }
         if (!stompClient) {
@@ -334,26 +344,53 @@
             return;
         }
         syncChatRoomWithStream();
-        const mediaReady = await ensureCameraPreview();
-        if (!mediaReady) return;
 
         const res = await fetch(`/api/streaming/${sid}/start?userId=${currentUserId}`, { method: 'POST', headers: authHeaders() });
         const d = await res.json();
         log('streamLog', '▶ ' + JSON.stringify(d), 'info');
+
+        if (d.status !== 'STARTED') {
+            return;
+        }
+
+        const mediaReady = await ensureCameraPreview();
+        if (!mediaReady) {
+            await fetch(`/api/streaming/${sid}/stop?userId=${currentUserId}`, { method: 'POST', headers: authHeaders() });
+            log('streamLog', '⏹ Stream cancelado porque no se pudo habilitar cámara', 'error');
+            return;
+        }
+
         subscribeStream();
     }
 
     async function stopStream() {
-        const sid = document.getElementById('streamId').value;
-        const res = await fetch(`/api/streaming/${sid}/stop`, { method: 'POST', headers: authHeaders() });
+        const sid = document.getElementById('streamId').value.trim();
+        document.getElementById('streamId').value = sid;
+        if (!currentUserId) {
+            log('streamLog', '❌ Debes loguearte primero', 'error');
+            return;
+        }
+        if (!sid) {
+            log('streamLog', '❌ El streamId es obligatorio', 'error');
+            return;
+        }
+        const res = await fetch(`/api/streaming/${sid}/stop?userId=${currentUserId}`, { method: 'POST', headers: authHeaders() });
         const d = await res.json();
         log('streamLog', '⏹ ' + JSON.stringify(d), 'info');
         if (autoInterval) { clearInterval(autoInterval); autoInterval = null; }
-        stopCameraPreview();
+        if (d.status === 'STOP_REQUESTED') {
+            stopCameraPreview();
+        } else if (d.status === 'FORBIDDEN_OWNER_MISMATCH') {
+            log('streamLog', '⛔ No puedes detener un stream iniciado por otro usuario', 'error');
+        }
     }
 
     function sendFakeGPS() {
-        const sid = document.getElementById('streamId').value;
+        const sid = document.getElementById('streamId').value.trim();
+        if (!sid) {
+            log('streamLog', '❌ El streamId es obligatorio', 'error');
+            return;
+        }
         stompClient.send('/app/stream/' + sid + '/data', {}, JSON.stringify({
             streamId: sid, userId: currentUserId, tipo: 'DATA',
             payload: { lat: (4.6 + Math.random() * 0.01).toFixed(6), lng: (-74.0 + Math.random() * 0.01).toFixed(6) }
@@ -362,7 +399,11 @@
     }
 
     function sendFakeBPM() {
-        const sid = document.getElementById('streamId').value;
+        const sid = document.getElementById('streamId').value.trim();
+        if (!sid) {
+            log('streamLog', '❌ El streamId es obligatorio', 'error');
+            return;
+        }
         stompClient.send('/app/stream/' + sid + '/data', {}, JSON.stringify({
             streamId: sid, userId: currentUserId, tipo: 'DATA',
             payload: { bpm: Math.floor(120 + Math.random() * 60), velocidad: (8 + Math.random() * 4).toFixed(1) }

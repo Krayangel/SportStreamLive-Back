@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -20,6 +21,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Slf4j
 @Component
 public class StreamSessionManager {
+
+    public enum StopResult {
+        STOP_REQUESTED,
+        NOT_ACTIVE,
+        FORBIDDEN_OWNER_MISMATCH
+    }
 
     /** Mapa de sesiones activas: streamId -> sesion */
     private final ConcurrentHashMap<String, StreamSession> activeSessions = new ConcurrentHashMap<>();
@@ -86,16 +93,21 @@ public class StreamSessionManager {
      *
      * @param streamId ID del stream a detener
      */
-    public boolean stopStream(String streamId) {
+    public StopResult stopStream(String streamId, String requesterUserId) {
         StreamSession session = activeSessions.get(streamId);
-        if (session != null) {
-            session.getActive().set(false); // Senal de parada atomica
-            log.info("Solicitud de parada enviada al stream {}", streamId);
-            return true;
-        } else {
+        if (session == null) {
             log.warn("Intento de detener stream inexistente: {}", streamId);
-            return false;
+            return StopResult.NOT_ACTIVE;
         }
+
+        if (!session.getUserId().equals(requesterUserId)) {
+            log.warn("Usuario {} intento detener stream {} cuyo owner es {}", requesterUserId, streamId, session.getUserId());
+            return StopResult.FORBIDDEN_OWNER_MISMATCH;
+        }
+
+        session.getActive().set(false); // Senal de parada atomica
+        log.info("Solicitud de parada enviada al stream {} por owner {}", streamId, requesterUserId);
+        return StopResult.STOP_REQUESTED;
     }
 
     /**
@@ -114,6 +126,12 @@ public class StreamSessionManager {
 
     public boolean isActive(String streamId) {
         return activeSessions.containsKey(streamId);
+    }
+
+    public List<ActiveStreamView> getActiveStreams() {
+        return activeSessions.values().stream()
+                .map(session -> new ActiveStreamView(session.getStreamId(), session.getUserId()))
+                .toList();
     }
 
     // --- Interno ---
@@ -140,5 +158,8 @@ public class StreamSessionManager {
         public AtomicBoolean getActive() { return active; }
         public String getStreamId() { return streamId; }
         public String getUserId() { return userId; }
+    }
+
+    public record ActiveStreamView(String streamId, String ownerUserId) {
     }
 }
