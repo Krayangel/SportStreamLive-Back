@@ -2,6 +2,7 @@ package com.sportstreamlive.streaming.controller;
 
 import com.sportstreamlive.streaming.model.ChatMessage;
 import com.sportstreamlive.streaming.repository.ChatMessageRepository;
+import com.sportstreamlive.streaming.service.StreamSessionManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
@@ -40,6 +41,7 @@ public class ChatController {
 
     private final SimpMessagingTemplate messagingTemplate;
     private final ChatMessageRepository chatMessageRepository;
+    private final StreamSessionManager streamSessionManager;
 
     /**
      * Historial en memoria por sala.
@@ -56,6 +58,11 @@ public class ChatController {
     @MessageMapping("/chat/{roomId}")
     public void handleChatMessage(@DestinationVariable String roomId,
                                   @Payload ChatMessage message) {
+        if (!streamSessionManager.isActive(roomId)) {
+            log.warn("Mensaje ignorado. Sala {} no corresponde a stream activo", roomId);
+            return;
+        }
+
         message.setRoomId(roomId);
         message.setTimestamp(LocalDateTime.now());
 

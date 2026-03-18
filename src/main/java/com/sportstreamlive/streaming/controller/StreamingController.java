@@ -71,15 +71,37 @@ public class StreamingController {
     @PostMapping("/{streamId}/start")
     public ResponseEntity<Map<String, String>> startStream(@PathVariable String streamId,
                                                            @RequestParam String userId) {
-        sessionManager.startStream(streamId, userId);
-        return ResponseEntity.ok(Map.of("status", "STARTED", "streamId", streamId));
+        boolean started = sessionManager.startStream(streamId, userId);
+        if (!started) {
+            return ResponseEntity.ok(Map.of(
+                "status", "ALREADY_ACTIVE",
+                "streamId", streamId,
+                "message", "El stream ya estaba activo"
+            ));
+        }
+        return ResponseEntity.ok(Map.of(
+            "status", "STARTED",
+            "streamId", streamId,
+            "message", "Stream iniciado"
+        ));
     }
 
     /** POST /api/streaming/{streamId}/stop */
     @PostMapping("/{streamId}/stop")
     public ResponseEntity<Map<String, String>> stopStream(@PathVariable String streamId) {
-        sessionManager.stopStream(streamId);
-        return ResponseEntity.ok(Map.of("status", "STOP_REQUESTED", "streamId", streamId));
+        boolean stopped = sessionManager.stopStream(streamId);
+        if (!stopped) {
+            return ResponseEntity.ok(Map.of(
+                    "status", "NOT_ACTIVE",
+                    "streamId", streamId,
+                    "message", "No habia stream activo para detener"
+            ));
+        }
+        return ResponseEntity.ok(Map.of(
+                "status", "STOP_REQUESTED",
+                "streamId", streamId,
+                "message", "Solicitud de parada enviada"
+        ));
     }
 
     /** GET /api/streaming/{streamId}/active */
