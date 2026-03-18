@@ -71,9 +71,9 @@
     <!-- Chat en Vivo -->
     <div class="card">
         <h2><span class="status-dot" id="chatDot"></span> 💬 Chat en Vivo (E5)</h2>
-        <label>Room ID</label>
-        <input id="chatRoom" value="sala-general" placeholder="roomId">
-        <button class="btn-primary btn-sm" onclick="subscribeChat()">Suscribirse a sala</button>
+        <label>Sala vinculada al stream</label>
+        <input id="chatRoom" value="stream-abc123" placeholder="roomId" readonly>
+        <button class="btn-primary btn-sm" onclick="subscribeChat()">Suscribirse chat del stream</button>
         <label style="margin-top:8px">Mensaje</label>
         <input id="chatInput" placeholder="Escribe algo..." onkeydown="if(event.key==='Enter') sendChat()">
         <div class="btn-row">
@@ -87,12 +87,14 @@
     <div class="card">
         <h2>📡 Streaming en Vivo (E5)</h2>
         <label>Stream ID</label>
-        <input id="streamId" value="stream-abc123" placeholder="streamId">
+        <input id="streamId" value="stream-abc123" placeholder="streamId" oninput="syncChatRoomWithStream()">
         <div class="btn-row">
             <button class="btn-success btn-sm" onclick="startStream()">▶ Iniciar</button>
             <button class="btn-danger btn-sm" onclick="stopStream()">⏹ Detener</button>
             <button class="btn-primary btn-sm" onclick="subscribeStream()">Suscribirse</button>
         </div>
+        <label style="margin-top:8px">Vista previa de camara (emisor)</label>
+        <video id="localPreview" autoplay muted playsinline style="width:100%;border-radius:8px;border:1px solid #2d2d44;background:#0f0f1a;max-height:220px"></video>
         <label style="margin-top:8px">Simular datos (GPS/BPM)</label>
         <div class="btn-row">
             <button class="btn-warning btn-sm" onclick="sendFakeGPS()">📍 GPS</button>
@@ -160,6 +162,9 @@
     let currentUserId = null;
     let currentUsername = null;
     let autoInterval = null;
+    let localMediaStream = null;
+    let chatSubscription = null;
+    let streamSubscription = null;
 
     // --- Auth ---
     async function register() {
@@ -225,21 +230,43 @@
 
     function disconnect() {
         if (stompClient) { stompClient.disconnect(); stompClient = null; }
+        if (chatSubscription) { chatSubscription.unsubscribe(); chatSubscription = null; }
+        if (streamSubscription) { streamSubscription.unsubscribe(); streamSubscription = null; }
         document.getElementById('connStatus').textContent = '🔴 Desconectado';
         document.querySelectorAll('.status-dot').forEach(d => d.classList.remove('connected'));
     }
 
+    function syncChatRoomWithStream() {
+        const sid = document.getElementById('streamId').value;
+        document.getElementById('chatRoom').value = sid;
+    }
+
     // --- Chat ---
     function subscribeChat() {
+        if (!stompClient) {
+            log('chatLog', '❌ Conecta WebSocket primero', 'error');
+            return;
+        }
         const room = document.getElementById('chatRoom').value;
-        stompClient.subscribe('/topic/chat/' + room, (msg) => {
+        if (!room) {
+            log('chatLog', '❌ Define streamId primero', 'error');
+            return;
+        }
+        if (chatSubscription) {
+            chatSubscription.unsubscribe();
+        }
+        chatSubscription = stompClient.subscribe('/topic/chat/' + room, (msg) => {
             const m = JSON.parse(msg.body);
             log('chatLog', `[${m.sender}]: ${m.content}`, 'recv');
         });
-        log('chatLog', '📌 Suscrito a sala: ' + room, 'info');
+        log('chatLog', '📌 Suscrito al chat del stream: ' + room, 'info');
     }
 
     function sendChat() {
+        if (!stompClient) {
+            log('chatLog', '❌ Conecta WebSocket primero', 'error');
+            return;
+        }
         const room = document.getElementById('chatRoom').value;
         const text = document.getElementById('chatInput').value;
         if (!text) return;
@@ -257,19 +284,63 @@
 
     // --- Streaming ---
     function subscribeStream() {
+        if (!stompClient) {
+            log('streamLog', '❌ Conecta WebSocket primero', 'error');
+            return;
+        }
         const sid = document.getElementById('streamId').value;
-        stompClient.subscribe('/topic/stream/' + sid, (msg) => {
+        if (streamSubscription) {
+            streamSubscription.unsubscribe();
+        }
+        streamSubscription = stompClient.subscribe('/topic/stream/' + sid, (msg) => {
             const e = JSON.parse(msg.body);
             log('streamLog', `[${e.tipo}] ${JSON.stringify(e.payload || {})}`, 'recv');
         });
         log('streamLog', '📌 Suscrito a stream: ' + sid, 'info');
+        syncChatRoomWithStream();
+        subscribeChat();
+    }
+
+    async function ensureCameraPreview() {
+        if (localMediaStream) return true;
+        try {
+            localMediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            const video = document.getElementById('localPreview');
+            video.srcObject = localMediaStream;
+            log('streamLog', '📷 Camara/microfono habilitados (preview local)', 'info');
+            return true;
+        } catch (err) {
+            log('streamLog', '❌ No se pudo acceder a camara: ' + err.message, 'error');
+            return false;
+        }
+    }
+
+    function stopCameraPreview() {
+        if (!localMediaStream) return;
+        localMediaStream.getTracks().forEach(t => t.stop());
+        localMediaStream = null;
+        const video = document.getElementById('localPreview');
+        video.srcObject = null;
     }
 
     async function startStream() {
         const sid = document.getElementById('streamId').value;
+        if (!currentUserId) {
+            log('streamLog', '❌ Debes loguearte primero', 'error');
+            return;
+        }
+        if (!stompClient) {
+            log('streamLog', '❌ Conecta WebSocket primero', 'error');
+            return;
+        }
+        syncChatRoomWithStream();
+        const mediaReady = await ensureCameraPreview();
+        if (!mediaReady) return;
+
         const res = await fetch(`/api/streaming/${sid}/start?userId=${currentUserId}`, { method: 'POST', headers: authHeaders() });
         const d = await res.json();
         log('streamLog', '▶ ' + JSON.stringify(d), 'info');
+        subscribeStream();
     }
 
     async function stopStream() {
@@ -278,6 +349,7 @@
         const d = await res.json();
         log('streamLog', '⏹ ' + JSON.stringify(d), 'info');
         if (autoInterval) { clearInterval(autoInterval); autoInterval = null; }
+        stopCameraPreview();
     }
 
     function sendFakeGPS() {
@@ -400,6 +472,8 @@
         container.appendChild(entry);
         container.scrollTop = container.scrollHeight;
     }
+
+    syncChatRoomWithStream();
 </script>
 </body>
 </html>

@@ -38,10 +38,10 @@ public class StreamSessionManager {
      * @param streamId ID del stream (vinculado a evento o reto)
      * @param userId   ID del usuario que transmite
      */
-    public void startStream(String streamId, String userId) {
+    public boolean startStream(String streamId, String userId) {
         if (activeSessions.containsKey(streamId)) {
             log.warn("Stream {} ya esta activo, ignorando solicitud de inicio", streamId);
-            return;
+            return false;
         }
 
         AtomicBoolean active = new AtomicBoolean(true);
@@ -77,6 +77,7 @@ public class StreamSessionManager {
         StreamSession session = new StreamSession(streamId, userId, active, streamThread);
         activeSessions.put(streamId, session);
         streamThread.start();
+        return true;
     }
 
     /**
@@ -85,13 +86,15 @@ public class StreamSessionManager {
      *
      * @param streamId ID del stream a detener
      */
-    public void stopStream(String streamId) {
+    public boolean stopStream(String streamId) {
         StreamSession session = activeSessions.get(streamId);
         if (session != null) {
             session.getActive().set(false); // Senal de parada atomica
             log.info("Solicitud de parada enviada al stream {}", streamId);
+            return true;
         } else {
             log.warn("Intento de detener stream inexistente: {}", streamId);
+            return false;
         }
     }
 
