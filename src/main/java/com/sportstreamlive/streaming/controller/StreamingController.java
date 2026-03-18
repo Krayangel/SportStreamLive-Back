@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -47,6 +48,10 @@ public class StreamingController {
     @MessageMapping("/stream/{streamId}/start")
     public void startStreamWs(@DestinationVariable String streamId,
                               @Payload StreamEvent event) {
+        if (!StringUtils.hasText(streamId) || event == null || !StringUtils.hasText(event.getUserId())) {
+            log.warn("Solicitud WS start invalida. streamId='{}' userId='{}'", streamId, event == null ? null : event.getUserId());
+            return;
+        }
         sessionManager.startStream(streamId, event.getUserId());
     }
 
@@ -54,6 +59,9 @@ public class StreamingController {
     @MessageMapping("/stream/{streamId}/data")
     public void sendDataWs(@DestinationVariable String streamId,
                            @Payload StreamEvent event) {
+        if (!StringUtils.hasText(streamId) || event == null) {
+            return;
+        }
         event.setStreamId(streamId);
         sessionManager.broadcastData(event);
     }
@@ -62,7 +70,11 @@ public class StreamingController {
     @MessageMapping("/stream/{streamId}/stop")
     public void stopStreamWs(@DestinationVariable String streamId,
                              @Payload StreamEvent event) {
-        sessionManager.stopStream(streamId);
+        if (!StringUtils.hasText(streamId) || event == null || !StringUtils.hasText(event.getUserId())) {
+            log.warn("Solicitud WS stop invalida. streamId='{}' userId='{}'", streamId, event == null ? null : event.getUserId());
+            return;
+        }
+        sessionManager.stopStream(streamId, event.getUserId());
     }
 
     // --- REST endpoints auxiliares ---
@@ -71,6 +83,19 @@ public class StreamingController {
     @PostMapping("/{streamId}/start")
     public ResponseEntity<Map<String, String>> startStream(@PathVariable String streamId,
                                                            @RequestParam String userId) {
+        if (!StringUtils.hasText(streamId)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "INVALID_STREAM_ID",
+                    "message", "streamId no puede estar vacio"
+            ));
+        }
+        if (!StringUtils.hasText(userId)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "INVALID_USER_ID",
+                    "message", "userId no puede estar vacio"
+            ));
+        }
+
         boolean started = sessionManager.startStream(streamId, userId);
         if (!started) {
             return ResponseEntity.ok(Map.of(
@@ -86,15 +111,36 @@ public class StreamingController {
         ));
     }
 
-    /** POST /api/streaming/{streamId}/stop */
+    /** POST /api/streaming/{streamId}/stop?userId=... */
     @PostMapping("/{streamId}/stop")
-    public ResponseEntity<Map<String, String>> stopStream(@PathVariable String streamId) {
-        boolean stopped = sessionManager.stopStream(streamId);
-        if (!stopped) {
+    public ResponseEntity<Map<String, String>> stopStream(@PathVariable String streamId,
+                                                          @RequestParam String userId) {
+        if (!StringUtils.hasText(streamId)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "INVALID_STREAM_ID",
+                    "message", "streamId no puede estar vacio"
+            ));
+        }
+        if (!StringUtils.hasText(userId)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "INVALID_USER_ID",
+                    "message", "userId no puede estar vacio"
+            ));
+        }
+
+        StreamSessionManager.StopResult result = sessionManager.stopStream(streamId, userId);
+        if (result == StreamSessionManager.StopResult.NOT_ACTIVE) {
             return ResponseEntity.ok(Map.of(
                     "status", "NOT_ACTIVE",
                     "streamId", streamId,
                     "message", "No habia stream activo para detener"
+            ));
+        }
+        if (result == StreamSessionManager.StopResult.FORBIDDEN_OWNER_MISMATCH) {
+            return ResponseEntity.status(403).body(Map.of(
+                    "status", "FORBIDDEN_OWNER_MISMATCH",
+                    "streamId", streamId,
+                    "message", "Solo el usuario que inicio el stream puede detenerlo"
             ));
         }
         return ResponseEntity.ok(Map.of(
@@ -107,6 +153,21 @@ public class StreamingController {
     /** GET /api/streaming/{streamId}/active */
     @GetMapping("/{streamId}/active")
     public ResponseEntity<Map<String, Object>> isActive(@PathVariable String streamId) {
+        if (!StringUtils.hasText(streamId)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "INVALID_STREAM_ID",
+                    "message", "streamId no puede estar vacio"
+            ));
+        }
         return ResponseEntity.ok(Map.of("streamId", streamId, "active", sessionManager.isActive(streamId)));
+    }
+
+    /** GET /api/streaming/active */
+    @GetMapping("/active")
+    public ResponseEntity<Map<String, Object>> listActiveStreams() {
+        return ResponseEntity.ok(Map.of(
+                "count", sessionManager.getActiveStreams().size(),
+                "streams", sessionManager.getActiveStreams()
+        ));
     }
 }
