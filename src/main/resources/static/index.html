@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SportStreamLive — Test Cliente</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', sans-serif; background: #0f0f1a; color: #e2e8f0; min-height: 100vh; }
+        .header { background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 16px 24px; }
+        .header h1 { font-size: 1.4rem; font-weight: 700; }
+        .header span { font-size: 0.8rem; opacity: 0.8; }
+        .container { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; padding: 20px; max-width: 1400px; margin: 0 auto; }
+        .card { background: #1e1e2e; border-radius: 12px; padding: 16px; border: 1px solid #2d2d44; }
+        .card h2 { font-size: 0.95rem; font-weight: 600; color: #a78bfa; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block; }
+        .status-dot.connected { background: #22c55e; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        input, select { width: 100%; padding: 8px 10px; background: #2d2d44; border: 1px solid #3d3d5e; border-radius: 6px; color: #e2e8f0; font-size: 0.85rem; margin-bottom: 8px; }
+        button { padding: 8px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.82rem; font-weight: 600; transition: all 0.15s; }
+        .btn-primary { background: #6366f1; color: white; }
+        .btn-primary:hover { background: #4f46e5; }
+        .btn-success { background: #22c55e; color: white; }
+        .btn-success:hover { background: #16a34a; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-warning { background: #f59e0b; color: #1f2937; }
+        .btn-warning:hover { background: #d97706; }
+        .btn-sm { padding: 5px 10px; font-size: 0.78rem; }
+        .btn-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+        .log { background: #0f0f1a; border-radius: 6px; padding: 10px; height: 180px; overflow-y: auto; font-family: monospace; font-size: 0.78rem; border: 1px solid #2d2d44; margin-top: 8px; }
+        .log .entry { padding: 2px 0; border-bottom: 1px solid #1e1e2e; }
+        .log .entry.recv { color: #86efac; }
+        .log .entry.sent { color: #93c5fd; }
+        .log .entry.info { color: #fbbf24; }
+        .log .entry.error { color: #f87171; }
+        .badge-card { background: #2d2d44; border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+        .badge-name { font-size: 0.85rem; font-weight: 600; color: #fbbf24; }
+        .badge-type { font-size: 0.72rem; color: #94a3b8; }
+        .section-full { grid-column: 1 / -1; }
+        .auth-bar { background: #1e1e2e; padding: 10px 20px; display: flex; gap: 10px; align-items: center; border-bottom: 1px solid #2d2d44; }
+        .auth-bar input { margin-bottom: 0; width: 180px; }
+        .token-display { font-size: 0.72rem; color: #86efac; background: #0f0f1a; padding: 4px 8px; border-radius: 4px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        label { font-size: 0.78rem; color: #94a3b8; margin-bottom: 3px; display: block; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>🏃 SportStreamLive — Test Client</h1>
+    <span>WebSocket + REST MVP — Verificación de concurrencia en tiempo real</span>
+</div>
+
+<!-- Auth Bar -->
+<div class="auth-bar">
+    <input id="authEmail" type="email" placeholder="email@test.com" value="test@test.com" style="width:180px;margin:0">
+    <input id="authUser" type="text" placeholder="username" value="testuser" style="width:130px;margin:0">
+    <input id="authPass" type="password" placeholder="password" value="password123" style="width:130px;margin:0">
+    <button class="btn-primary btn-sm" onclick="register()">Registrar</button>
+    <button class="btn-success btn-sm" onclick="login()">Login</button>
+    <span id="tokenDisplay" class="token-display">Sin sesión</span>
+    <span id="connStatus">🔴 Desconectado</span>
+    <button class="btn-primary btn-sm" onclick="connect()">Conectar WS</button>
+    <button class="btn-danger btn-sm" onclick="disconnect()">Desconectar</button>
+</div>
+
+<div class="container">
+
+    <!-- Chat en Vivo -->
+    <div class="card">
+        <h2><span class="status-dot" id="chatDot"></span> 💬 Chat en Vivo (E5)</h2>
+        <label>Room ID</label>
+        <input id="chatRoom" value="sala-general" placeholder="roomId">
+        <button class="btn-primary btn-sm" onclick="subscribeChat()">Suscribirse a sala</button>
+        <label style="margin-top:8px">Mensaje</label>
+        <input id="chatInput" placeholder="Escribe algo..." onkeydown="if(event.key==='Enter') sendChat()">
+        <div class="btn-row">
+            <button class="btn-success btn-sm" onclick="sendChat()">Enviar</button>
+            <button class="btn-warning btn-sm" onclick="loadHistory()">Ver Historial</button>
+        </div>
+        <div class="log" id="chatLog"><div class="entry info">Esperando mensajes...</div></div>
+    </div>
+
+    <!-- Streaming en Vivo -->
+    <div class="card">
+        <h2>📡 Streaming en Vivo (E5)</h2>
+        <label>Stream ID</label>
+        <input id="streamId" value="stream-abc123" placeholder="streamId">
+        <div class="btn-row">
+            <button class="btn-success btn-sm" onclick="startStream()">▶ Iniciar</button>
+            <button class="btn-danger btn-sm" onclick="stopStream()">⏹ Detener</button>
+            <button class="btn-primary btn-sm" onclick="subscribeStream()">Suscribirse</button>
+        </div>
+        <label style="margin-top:8px">Simular datos (GPS/BPM)</label>
+        <div class="btn-row">
+            <button class="btn-warning btn-sm" onclick="sendFakeGPS()">📍 GPS</button>
+            <button class="btn-warning btn-sm" onclick="sendFakeBPM()">❤️ BPM</button>
+            <button class="btn-warning btn-sm" onclick="autoSend()">🔄 Auto (5s)</button>
+        </div>
+        <div class="log" id="streamLog"><div class="entry info">Sin eventos aún...</div></div>
+    </div>
+
+    <!-- Logros / Medallas -->
+    <div class="card">
+        <h2>🏅 Logros (E6) — Race Condition Demo</h2>
+        <label>Badge ID (medalla a atrapar)</label>
+        <input id="badgeId" value="evento-001-primero" placeholder="badgeId">
+        <label>Nombre medalla</label>
+        <input id="badgeName" value="Primer Lugar" placeholder="nombre">
+        <button class="btn-warning" onclick="makeBadgeAvailable()" style="width:100%;margin-bottom:6px">
+            🎯 Hacer Disponible (simular evento)
+        </button>
+        <button class="btn-success" onclick="claimBadge()" style="width:100%;margin-bottom:6px">
+            ⚡ ATRAPAR MEDALLA (click rápido!)
+        </button>
+        <button class="btn-primary btn-sm" onclick="getUserBadges()">Ver mis medallas</button>
+        <div class="log" id="badgeLog"><div class="entry info">Sin actividad aún...</div></div>
+    </div>
+
+    <!-- Eventos y Retos (E3/E4) -->
+    <div class="card">
+        <h2>🗓️ Eventos (E3)</h2>
+        <label>Título</label>
+        <input id="eventTitle" value="Maratón Virtual 2026" placeholder="titulo">
+        <div class="btn-row">
+            <button class="btn-success btn-sm" onclick="createEvent()">Crear</button>
+            <button class="btn-primary btn-sm" onclick="listEvents()">Listar</button>
+        </div>
+        <div class="log" id="eventLog"><div class="entry info">Sin actividad...</div></div>
+    </div>
+
+    <div class="card">
+        <h2>🏋️ Retos (E4)</h2>
+        <label>Nombre</label>
+        <input id="challengeName" value="30 Días de Ejercicio" placeholder="nombre">
+        <label>Duración (días)</label>
+        <input id="challengeDays" value="30" type="number">
+        <div class="btn-row">
+            <button class="btn-success btn-sm" onclick="createChallenge()">Crear</button>
+            <button class="btn-primary btn-sm" onclick="listChallenges()">Listar</button>
+        </div>
+        <div class="log" id="challengeLog"><div class="entry info">Sin actividad...</div></div>
+    </div>
+
+    <div class="card">
+        <h2>📊 Dashboard (E2)</h2>
+        <label>User ID</label>
+        <input id="dashUserId" placeholder="userId (del login)">
+        <button class="btn-primary btn-sm" onclick="getDashboard()" style="width:100%">Ver Perfil y Puntos</button>
+        <div class="log" id="dashLog"><div class="entry info">Sin datos...</div></div>
+    </div>
+
+</div>
+
+<script>
+    let stompClient = null;
+    let jwtToken = null;
+    let currentUserId = null;
+    let currentUsername = null;
+    let autoInterval = null;
+
+    // --- Auth ---
+    async function register() {
+        const res = await fetch('/api/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                username: document.getElementById('authUser').value,
+                email: document.getElementById('authEmail').value,
+                password: document.getElementById('authPass').value
+            })
+        });
+        const data = await res.json();
+        if (data.token) {
+            setSession(data);
+            log('badgeLog', '✅ Registrado. Recibirás medalla de bienvenida.', 'info');
+        } else {
+            log('badgeLog', '❌ ' + JSON.stringify(data), 'error');
+        }
+    }
+
+    async function login() {
+        const res = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                email: document.getElementById('authEmail').value,
+                password: document.getElementById('authPass').value
+            })
+        });
+        const data = await res.json();
+        if (data.token) {
+            setSession(data);
+        } else {
+            alert('Login fallido: ' + JSON.stringify(data));
+        }
+    }
+
+    function setSession(data) {
+        jwtToken = data.token;
+        currentUserId = data.userId;
+        currentUsername = data.username;
+        document.getElementById('tokenDisplay').textContent = '✅ ' + data.username + ' | ' + jwtToken.substring(0, 30) + '...';
+        document.getElementById('dashUserId').value = data.userId;
+    }
+
+    function authHeaders() {
+        return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + jwtToken };
+    }
+
+    // --- WebSocket ---
+    function connect() {
+        const socket = new SockJS('/ws');
+        stompClient = Stomp.over(socket);
+        stompClient.debug = null;
+        stompClient.connect({}, () => {
+            document.getElementById('connStatus').textContent = '🟢 Conectado';
+            document.querySelectorAll('.status-dot').forEach(d => d.classList.add('connected'));
+        }, (err) => {
+            document.getElementById('connStatus').textContent = '🔴 Error: ' + err;
+        });
+    }
+
+    function disconnect() {
+        if (stompClient) { stompClient.disconnect(); stompClient = null; }
+        document.getElementById('connStatus').textContent = '🔴 Desconectado';
+        document.querySelectorAll('.status-dot').forEach(d => d.classList.remove('connected'));
+    }
+
+    // --- Chat ---
+    function subscribeChat() {
+        const room = document.getElementById('chatRoom').value;
+        stompClient.subscribe('/topic/chat/' + room, (msg) => {
+            const m = JSON.parse(msg.body);
+            log('chatLog', `[${m.sender}]: ${m.content}`, 'recv');
+        });
+        log('chatLog', '📌 Suscrito a sala: ' + room, 'info');
+    }
+
+    function sendChat() {
+        const room = document.getElementById('chatRoom').value;
+        const text = document.getElementById('chatInput').value;
+        if (!text) return;
+        stompClient.send('/app/chat/' + room, {}, JSON.stringify({ sender: currentUsername || 'anon', content: text }));
+        document.getElementById('chatInput').value = '';
+        log('chatLog', '→ [tú]: ' + text, 'sent');
+    }
+
+    async function loadHistory() {
+        const room = document.getElementById('chatRoom').value;
+        const res = await fetch('/api/chat/' + room + '/history', { headers: authHeaders() });
+        const msgs = await res.json();
+        msgs.forEach(m => log('chatLog', `[${m.sender}]: ${m.content}`, 'recv'));
+    }
+
+    // --- Streaming ---
+    function subscribeStream() {
+        const sid = document.getElementById('streamId').value;
+        stompClient.subscribe('/topic/stream/' + sid, (msg) => {
+            const e = JSON.parse(msg.body);
+            log('streamLog', `[${e.tipo}] ${JSON.stringify(e.payload || {})}`, 'recv');
+        });
+        log('streamLog', '📌 Suscrito a stream: ' + sid, 'info');
+    }
+
+    async function startStream() {
+        const sid = document.getElementById('streamId').value;
+        const res = await fetch(`/api/streaming/${sid}/start?userId=${currentUserId}`, { method: 'POST', headers: authHeaders() });
+        const d = await res.json();
+        log('streamLog', '▶ ' + JSON.stringify(d), 'info');
+    }
+
+    async function stopStream() {
+        const sid = document.getElementById('streamId').value;
+        const res = await fetch(`/api/streaming/${sid}/stop`, { method: 'POST', headers: authHeaders() });
+        const d = await res.json();
+        log('streamLog', '⏹ ' + JSON.stringify(d), 'info');
+        if (autoInterval) { clearInterval(autoInterval); autoInterval = null; }
+    }
+
+    function sendFakeGPS() {
+        const sid = document.getElementById('streamId').value;
+        stompClient.send('/app/stream/' + sid + '/data', {}, JSON.stringify({
+            streamId: sid, userId: currentUserId, tipo: 'DATA',
+            payload: { lat: (4.6 + Math.random() * 0.01).toFixed(6), lng: (-74.0 + Math.random() * 0.01).toFixed(6) }
+        }));
+        log('streamLog', '📍 GPS enviado', 'sent');
+    }
+
+    function sendFakeBPM() {
+        const sid = document.getElementById('streamId').value;
+        stompClient.send('/app/stream/' + sid + '/data', {}, JSON.stringify({
+            streamId: sid, userId: currentUserId, tipo: 'DATA',
+            payload: { bpm: Math.floor(120 + Math.random() * 60), velocidad: (8 + Math.random() * 4).toFixed(1) }
+        }));
+        log('streamLog', '❤️ BPM enviado', 'sent');
+    }
+
+    function autoSend() {
+        if (autoInterval) { clearInterval(autoInterval); autoInterval = null; log('streamLog', '⏸ Auto detenido', 'info'); return; }
+        autoInterval = setInterval(() => { sendFakeGPS(); sendFakeBPM(); }, 3000);
+        log('streamLog', '🔄 Auto-envío cada 3s activado', 'info');
+    }
+
+    // --- Badges ---
+    async function makeBadgeAvailable() {
+        const badgeId = document.getElementById('badgeId').value;
+        // Crear un evento de prueba para que el backend registre la medalla disponible
+        const res = await fetch('/api/events', {
+            method: 'POST', headers: authHeaders(),
+            body: JSON.stringify({ titulo: 'Evento Test', tipo: 'VIRTUAL', creatorId: currentUserId, asistentes: [] })
+        });
+        const ev = await res.json();
+        log('badgeLog', `✅ Evento creado. Badge disponible: evento-${ev.id}-primero`, 'info');
+        document.getElementById('badgeId').value = `evento-${ev.id}-primero`;
+    }
+
+    async function claimBadge() {
+        const badgeId = document.getElementById('badgeId').value;
+        const nombre = document.getElementById('badgeName').value;
+        const res = await fetch(`/api/badges/${badgeId}/claim`, {
+            method: 'POST', headers: authHeaders(),
+            body: JSON.stringify({ userId: currentUserId, tipo: 'PRIMER_LOGRO', nombre })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            log('badgeLog', '🏅 GANASTE: ' + data.message, 'recv');
+        } else {
+            log('badgeLog', '❌ PERDISTE: ' + data.message, 'error');
+        }
+    }
+
+    async function getUserBadges() {
+        const res = await fetch('/api/badges/' + currentUserId, { headers: authHeaders() });
+        const badges = await res.json();
+        log('badgeLog', `🏅 Tienes ${badges.length} medallas.`, 'info');
+        badges.forEach(b => log('badgeLog', `  • ${b.nombre} (${b.tipo})`, 'recv'));
+    }
+
+    // --- Eventos ---
+    async function createEvent() {
+        const titulo = document.getElementById('eventTitle').value;
+        const res = await fetch('/api/events', {
+            method: 'POST', headers: authHeaders(),
+            body: JSON.stringify({ titulo, tipo: 'VIRTUAL', creatorId: currentUserId, asistentes: [] })
+        });
+        const ev = await res.json();
+        log('eventLog', '✅ Evento creado: ' + ev.id, 'info');
+        // Inscribir automáticamente al creador
+        await fetch(`/api/events/${ev.id}/inscribir?userId=${currentUserId}`, { method: 'POST', headers: authHeaders() });
+        log('eventLog', '📋 Inscrito al evento', 'recv');
+    }
+
+    async function listEvents() {
+        const res = await fetch('/api/events', { headers: authHeaders() });
+        const events = await res.json();
+        log('eventLog', `📋 ${events.length} evento(s)`, 'info');
+        events.forEach(e => log('eventLog', `  • [${e.tipo}] ${e.titulo} (${e.asistentes.length} asistentes)`, 'recv'));
+    }
+
+    // --- Retos ---
+    async function createChallenge() {
+        const nombre = document.getElementById('challengeName').value;
+        const dias = parseInt(document.getElementById('challengeDays').value);
+        const res = await fetch('/api/challenges', {
+            method: 'POST', headers: authHeaders(),
+            body: JSON.stringify({ nombre, duracionDias: dias, creatorId: currentUserId, participantes: [] })
+        });
+        const ch = await res.json();
+        log('challengeLog', '✅ Reto creado: ' + ch.id, 'info');
+        await fetch(`/api/challenges/${ch.id}/unirse?userId=${currentUserId}`, { method: 'POST', headers: authHeaders() });
+        log('challengeLog', '💪 Unido al reto', 'recv');
+    }
+
+    async function listChallenges() {
+        const res = await fetch('/api/challenges', { headers: authHeaders() });
+        const chs = await res.json();
+        log('challengeLog', `🏋️ ${chs.length} reto(s)`, 'info');
+        chs.forEach(c => log('challengeLog', `  • ${c.nombre} (${c.duracionDias}d, ${c.participantes.length} participantes)`, 'recv'));
+    }
+
+    // --- Dashboard ---
+    async function getDashboard() {
+        const uid = document.getElementById('dashUserId').value;
+        const res = await fetch('/api/dashboard/' + uid, { headers: authHeaders() });
+        const p = await res.json();
+        log('dashLog', `👤 Racha: ${p.racha}d | Puntos: ${p.puntosTotales}`, 'info');
+        log('dashLog', `🎯 Metas: ${p.metas || 'sin definir'}`, 'recv');
+    }
+
+    // --- Util ---
+    function log(containerId, message, type) {
+        const container = document.getElementById(containerId);
+        const entry = document.createElement('div');
+        entry.className = 'entry ' + type;
+        const time = new Date().toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        entry.textContent = `[${time}] ${message}`;
+        container.appendChild(entry);
+        container.scrollTop = container.scrollHeight;
+    }
+</script>
+</body>
+</html>
