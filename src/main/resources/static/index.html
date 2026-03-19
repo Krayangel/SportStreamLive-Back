@@ -44,6 +44,9 @@
         .auth-bar input { margin-bottom: 0; width: 180px; }
         .token-display { font-size: 0.72rem; color: #86efac; background: #0f0f1a; padding: 4px 8px; border-radius: 4px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         label { font-size: 0.78rem; color: #94a3b8; margin-bottom: 3px; display: block; }
+        .stream-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+        .stream-item { display: flex; justify-content: space-between; align-items: center; background: #2d2d44; border: 1px solid #3d3d5e; border-radius: 6px; padding: 8px; }
+        .stream-meta { font-size: 0.75rem; color: #cbd5e1; }
     </style>
 </head>
 <body>
@@ -60,10 +63,10 @@
     <input id="authPass" type="password" placeholder="password" value="password123" style="width:130px;margin:0">
     <button class="btn-primary btn-sm" onclick="register()">Registrar</button>
     <button class="btn-success btn-sm" onclick="login()">Login</button>
+    <button class="btn-danger btn-sm" onclick="logout()">Logout</button>
     <span id="tokenDisplay" class="token-display">Sin sesión</span>
     <span id="connStatus">🔴 Desconectado</span>
-    <button class="btn-primary btn-sm" onclick="connect()">Conectar WS</button>
-    <button class="btn-danger btn-sm" onclick="disconnect()">Desconectar</button>
+    <button class="btn-warning btn-sm" onclick="leaveLiveSession()">Salir del en vivo</button>
 </div>
 
 <div class="container">
@@ -102,6 +105,16 @@
             <button class="btn-warning btn-sm" onclick="autoSend()">🔄 Auto (5s)</button>
         </div>
         <div class="log" id="streamLog"><div class="entry info">Sin eventos aún...</div></div>
+    </div>
+
+    <!-- Viewer Mode -->
+    <div class="card">
+        <h2>👀 Viewer Mode (join stream existente)</h2>
+        <button class="btn-primary btn-sm" onclick="loadActiveStreams()">Actualizar streams activos</button>
+        <div id="activeStreams" class="stream-list"></div>
+        <label style="margin-top:8px">Video remoto (viewer)</label>
+        <video id="remoteViewerVideo" autoplay playsinline style="width:100%;border-radius:8px;border:1px solid #2d2d44;background:#0f0f1a;max-height:220px"></video>
+        <div class="log" id="viewerLog"><div class="entry info">Sin señales WebRTC aún...</div></div>
     </div>
 
     <!-- Logros / Medallas -->
@@ -158,13 +171,25 @@
 
 <script>
     let stompClient = null;
+    let wsReady = false;
+    let wsConnectPromise = null;
+
     let jwtToken = null;
     let currentUserId = null;
     let currentUsername = null;
+    let currentOwnedStreamId = null;
+    let currentViewingStreamId = null;
+    let currentStreamOwnerUserId = null;
+    let isBroadcaster = false;
+
     let autoInterval = null;
     let localMediaStream = null;
     let chatSubscription = null;
     let streamSubscription = null;
+    let signalingSubscription = null;
+
+    const peerConnections = new Map();
+    const rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
     // --- Auth ---
     async function register() {
@@ -209,6 +234,16 @@
         currentUsername = data.username;
         document.getElementById('tokenDisplay').textContent = '✅ ' + data.username + ' | ' + jwtToken.substring(0, 30) + '...';
         document.getElementById('dashUserId').value = data.userId;
+        connect().catch((err) => log('streamLog', '❌ No fue posible conectar WS: ' + err, 'error'));
+    }
+
+    async function logout() {
+        await leaveLiveSession();
+        disconnect();
+        jwtToken = null;
+        currentUserId = null;
+        currentUsername = null;
+        document.getElementById('tokenDisplay').textContent = 'Sin sesión';
     }
 
     function authHeaders() {
@@ -217,23 +252,42 @@
 
     // --- WebSocket ---
     function connect() {
-        const socket = new SockJS('/ws');
-        stompClient = Stomp.over(socket);
-        stompClient.debug = null;
-        stompClient.connect({}, () => {
-            document.getElementById('connStatus').textContent = '🟢 Conectado';
-            document.querySelectorAll('.status-dot').forEach(d => d.classList.add('connected'));
-        }, (err) => {
-            document.getElementById('connStatus').textContent = '🔴 Error: ' + err;
+        if (wsReady && stompClient) return Promise.resolve();
+        if (wsConnectPromise) return wsConnectPromise;
+
+        wsConnectPromise = new Promise((resolve, reject) => {
+            const socket = new SockJS('/ws');
+            stompClient = Stomp.over(socket);
+            stompClient.debug = null;
+            stompClient.connect({}, () => {
+                wsReady = true;
+                document.getElementById('connStatus').textContent = '🟢 Conectado';
+                document.querySelectorAll('.status-dot').forEach(d => d.classList.add('connected'));
+                wsConnectPromise = null;
+                resolve();
+            }, (err) => {
+                wsReady = false;
+                document.getElementById('connStatus').textContent = '🔴 Error WS';
+                wsConnectPromise = null;
+                reject(err);
+            });
         });
+
+        return wsConnectPromise;
     }
 
     function disconnect() {
+        wsReady = false;
         if (stompClient) { stompClient.disconnect(); stompClient = null; }
         if (chatSubscription) { chatSubscription.unsubscribe(); chatSubscription = null; }
         if (streamSubscription) { streamSubscription.unsubscribe(); streamSubscription = null; }
+        if (signalingSubscription) { signalingSubscription.unsubscribe(); signalingSubscription = null; }
         document.getElementById('connStatus').textContent = '🔴 Desconectado';
         document.querySelectorAll('.status-dot').forEach(d => d.classList.remove('connected'));
+    }
+
+    async function ensureWsConnected() {
+        if (!wsReady) await connect();
     }
 
     function syncChatRoomWithStream() {
@@ -243,7 +297,7 @@
 
     // --- Chat ---
     function subscribeChat() {
-        if (!stompClient) {
+        if (!wsReady || !stompClient) {
             log('chatLog', '❌ Conecta WebSocket primero', 'error');
             return;
         }
@@ -263,7 +317,7 @@
     }
 
     function sendChat() {
-        if (!stompClient) {
+        if (!wsReady || !stompClient) {
             log('chatLog', '❌ Conecta WebSocket primero', 'error');
             return;
         }
@@ -283,27 +337,163 @@
     }
 
     // --- Streaming ---
-    function subscribeStream() {
-        if (!stompClient) {
+    function subscribeStream(forcedStreamId = null) {
+        if (!wsReady || !stompClient) {
             log('streamLog', '❌ Conecta WebSocket primero', 'error');
             return;
         }
-        const sid = document.getElementById('streamId').value.trim();
+        const sid = (forcedStreamId || document.getElementById('streamId').value).trim();
         if (!sid) {
             log('streamLog', '❌ El streamId es obligatorio', 'error');
             return;
         }
         document.getElementById('streamId').value = sid;
+        currentViewingStreamId = sid;
         if (streamSubscription) {
             streamSubscription.unsubscribe();
         }
         streamSubscription = stompClient.subscribe('/topic/stream/' + sid, (msg) => {
             const e = JSON.parse(msg.body);
             log('streamLog', `[${e.tipo}] ${JSON.stringify(e.payload || {})}`, 'recv');
+            if (e.tipo === 'STARTED' && e.userId) {
+                currentStreamOwnerUserId = e.userId;
+            }
+            if (e.tipo === 'ENDED' && !isBroadcaster) {
+                log('viewerLog', '📴 El stream terminó. Saliendo del en vivo...', 'info');
+                leaveLiveSession(false);
+            }
         });
         log('streamLog', '📌 Suscrito a stream: ' + sid, 'info');
         syncChatRoomWithStream();
         subscribeChat();
+    }
+
+    function subscribeSignaling(streamId) {
+        if (!wsReady || !stompClient) return;
+        if (signalingSubscription) {
+            signalingSubscription.unsubscribe();
+        }
+        signalingSubscription = stompClient.subscribe('/topic/webrtc/' + streamId, async (msg) => {
+            const signal = JSON.parse(msg.body);
+            await handleWebRtcSignal(signal);
+        });
+        log('viewerLog', '📡 Suscrito a signaling WebRTC: ' + streamId, 'info');
+    }
+
+    function sendSignal(streamId, payload) {
+        if (!wsReady || !stompClient) return;
+        const body = {
+            ...payload,
+            streamId,
+            senderUserId: currentUserId
+        };
+        stompClient.send('/app/webrtc/' + streamId + '/signal', {}, JSON.stringify(body));
+    }
+
+    function createPeerConnection(peerKey, targetUserId, streamId) {
+        const pc = new RTCPeerConnection(rtcConfig);
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                sendSignal(streamId, {
+                    type: 'ICE',
+                    targetUserId,
+                    candidate: event.candidate.candidate,
+                    sdpMid: event.candidate.sdpMid,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex
+                });
+            }
+        };
+
+        pc.ontrack = (event) => {
+            const remoteVideo = document.getElementById('remoteViewerVideo');
+            remoteVideo.srcObject = event.streams[0];
+            log('viewerLog', '🎬 Recibiendo video remoto', 'recv');
+        };
+
+        peerConnections.set(peerKey, pc);
+        return pc;
+    }
+
+    async function createOfferForViewer(viewerUserId) {
+        if (!currentViewingStreamId) return;
+        const pc = createPeerConnection(viewerUserId, viewerUserId, currentViewingStreamId);
+        if (localMediaStream) {
+            localMediaStream.getTracks().forEach(track => pc.addTrack(track, localMediaStream));
+        }
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        sendSignal(currentViewingStreamId, {
+            type: 'OFFER',
+            targetUserId: viewerUserId,
+            sdp: offer.sdp
+        });
+        log('viewerLog', '📤 OFFER enviada a viewer ' + viewerUserId, 'sent');
+    }
+
+    async function handleWebRtcSignal(signal) {
+        if (!signal || !signal.type || !currentUserId) return;
+        if (signal.senderUserId === currentUserId) return;
+        if (signal.targetUserId && signal.targetUserId !== currentUserId) return;
+
+        if (isBroadcaster) {
+            if (signal.type === 'JOIN') {
+                await createOfferForViewer(signal.senderUserId);
+                return;
+            }
+
+            const pc = peerConnections.get(signal.senderUserId);
+            if (!pc) return;
+
+            if (signal.type === 'ANSWER') {
+                await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: signal.sdp }));
+                log('viewerLog', '📥 ANSWER recibida de ' + signal.senderUserId, 'recv');
+            } else if (signal.type === 'ICE' && signal.candidate) {
+                await pc.addIceCandidate(new RTCIceCandidate({
+                    candidate: signal.candidate,
+                    sdpMid: signal.sdpMid,
+                    sdpMLineIndex: signal.sdpMLineIndex
+                }));
+            } else if (signal.type === 'LEAVE') {
+                pc.close();
+                peerConnections.delete(signal.senderUserId);
+                log('viewerLog', '👋 Viewer salió: ' + signal.senderUserId, 'info');
+            }
+            return;
+        }
+
+        // Viewer flow
+        if (signal.type === 'OFFER') {
+            currentStreamOwnerUserId = signal.senderUserId;
+            const pc = createPeerConnection('broadcaster', signal.senderUserId, currentViewingStreamId);
+
+            await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: signal.sdp }));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+
+            sendSignal(currentViewingStreamId, {
+                type: 'ANSWER',
+                targetUserId: signal.senderUserId,
+                sdp: answer.sdp
+            });
+            log('viewerLog', '📤 ANSWER enviada al emisor', 'sent');
+        } else if (signal.type === 'ICE' && signal.candidate) {
+            const pc = peerConnections.get('broadcaster');
+            if (!pc) return;
+            await pc.addIceCandidate(new RTCIceCandidate({
+                candidate: signal.candidate,
+                sdpMid: signal.sdpMid,
+                sdpMLineIndex: signal.sdpMLineIndex
+            }));
+        }
+    }
+
+    function closeAllPeerConnections() {
+        peerConnections.forEach((pc) => pc.close());
+        peerConnections.clear();
+        const remoteVideo = document.getElementById('remoteViewerVideo');
+        remoteVideo.srcObject = null;
     }
 
     async function ensureCameraPreview() {
@@ -339,10 +529,7 @@
             log('streamLog', '❌ El streamId es obligatorio', 'error');
             return;
         }
-        if (!stompClient) {
-            log('streamLog', '❌ Conecta WebSocket primero', 'error');
-            return;
-        }
+        await ensureWsConnected();
         syncChatRoomWithStream();
 
         const res = await fetch(`/api/streaming/${sid}/start?userId=${currentUserId}`, { method: 'POST', headers: authHeaders() });
@@ -360,7 +547,13 @@
             return;
         }
 
+        isBroadcaster = true;
+        currentOwnedStreamId = sid;
+        currentViewingStreamId = sid;
+        currentStreamOwnerUserId = currentUserId;
+
         subscribeStream();
+        subscribeSignaling(sid);
     }
 
     async function stopStream() {
@@ -379,10 +572,100 @@
         log('streamLog', '⏹ ' + JSON.stringify(d), 'info');
         if (autoInterval) { clearInterval(autoInterval); autoInterval = null; }
         if (d.status === 'STOP_REQUESTED') {
-            stopCameraPreview();
+            await leaveLiveSession(false);
         } else if (d.status === 'FORBIDDEN_OWNER_MISMATCH') {
             log('streamLog', '⛔ No puedes detener un stream iniciado por otro usuario', 'error');
         }
+    }
+
+    async function loadActiveStreams() {
+        if (!jwtToken) {
+            log('viewerLog', '❌ Debes loguearte primero', 'error');
+            return;
+        }
+        const res = await fetch('/api/streaming/active', { headers: authHeaders() });
+        const data = await res.json();
+        const container = document.getElementById('activeStreams');
+        container.innerHTML = '';
+
+        if (!data.streams || data.streams.length === 0) {
+            container.innerHTML = '<div class="entry info">No hay streams activos</div>';
+            return;
+        }
+
+        data.streams.forEach((s) => {
+            const item = document.createElement('div');
+            item.className = 'stream-item';
+            item.innerHTML = `
+                <div class="stream-meta">🎥 ${s.streamId}<br>Owner: ${s.ownerUserId}</div>
+                <button class="btn-success btn-sm">Unirse</button>
+            `;
+            item.querySelector('button').onclick = () => joinStreamAsViewer(s.streamId, s.ownerUserId);
+            container.appendChild(item);
+        });
+    }
+
+    async function joinStreamAsViewer(streamId, ownerUserId = null) {
+        if (!currentUserId) {
+            log('viewerLog', '❌ Debes loguearte primero', 'error');
+            return;
+        }
+        await ensureWsConnected();
+
+        if (isBroadcaster && currentOwnedStreamId && currentOwnedStreamId !== streamId) {
+            log('viewerLog', '❌ No puedes unirte como viewer mientras emites otro stream', 'error');
+            return;
+        }
+
+        if (currentViewingStreamId && currentViewingStreamId !== streamId) {
+            await leaveLiveSession(false);
+        }
+
+        isBroadcaster = false;
+        currentViewingStreamId = streamId;
+        currentStreamOwnerUserId = ownerUserId;
+        document.getElementById('streamId').value = streamId;
+        syncChatRoomWithStream();
+
+        subscribeStream(streamId);
+        subscribeSignaling(streamId);
+        sendSignal(streamId, { type: 'JOIN', targetUserId: null });
+        log('viewerLog', '👀 Unido como viewer a ' + streamId, 'info');
+    }
+
+    async function leaveLiveSession(stopOwnedStream = true) {
+        if (autoInterval) {
+            clearInterval(autoInterval);
+            autoInterval = null;
+        }
+
+        if (currentViewingStreamId && wsReady) {
+            sendSignal(currentViewingStreamId, { type: 'LEAVE', targetUserId: null });
+        }
+
+        if (stopOwnedStream && currentOwnedStreamId && currentUserId) {
+            try {
+                await fetch(`/api/streaming/${currentOwnedStreamId}/stop?userId=${currentUserId}`, {
+                    method: 'POST',
+                    headers: authHeaders()
+                });
+            } catch (_) {
+                // Best effort al salir de pagina
+            }
+        }
+
+        stopCameraPreview();
+        closeAllPeerConnections();
+
+        if (chatSubscription) { chatSubscription.unsubscribe(); chatSubscription = null; }
+        if (streamSubscription) { streamSubscription.unsubscribe(); streamSubscription = null; }
+        if (signalingSubscription) { signalingSubscription.unsubscribe(); signalingSubscription = null; }
+
+        currentOwnedStreamId = null;
+        currentViewingStreamId = null;
+        currentStreamOwnerUserId = null;
+        isBroadcaster = false;
+        log('streamLog', '👋 Saliste del en vivo', 'info');
     }
 
     function sendFakeGPS() {
@@ -515,6 +798,13 @@
     }
 
     syncChatRoomWithStream();
+    window.addEventListener('beforeunload', () => {
+        if (stompClient && currentViewingStreamId) {
+            sendSignal(currentViewingStreamId, { type: 'LEAVE', targetUserId: null });
+        }
+    });
+    window.addEventListener('popstate', () => { leaveLiveSession(); });
+    window.addEventListener('hashchange', () => { leaveLiveSession(); });
 </script>
 </body>
 </html>
