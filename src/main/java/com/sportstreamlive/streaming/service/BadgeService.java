@@ -11,31 +11,14 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Servicio de logros (E6 - Logros).
- *
- * CONCURRENCIA — Race Condition "Atrapar Medalla":
- * El escenario: N usuarios hacen click en "Atrapar Medalla" al mismo tiempo.
- * Solo UNO debe obtenerla.
- *
- * Solucion: ConcurrentHashMap<badgeId, AtomicBoolean>
- *   - claimed.compareAndSet(false, true) es una operacion ATOMICA.
- *   - Solo el primer thread que la ejecuta retorna true.
- *   - Todos los demas retornan false sin locks ni synchronized.
- *
- * Esto evita:
- *   - Race conditions (dos usuarios obtienen la misma medalla)
- *   - Deadlocks (sin synchronized)
- *   - Busy-waiting (operacion O(1) sin espera)
- */
 @Slf4j
 @Service
 public class BadgeService {
 
     /**
-     * Mapa de medallas pendientes de ser reclamadas.
-     * Key: badgeId (identificador unico de la medalla disponible)
-     * Value: AtomicBoolean — false = disponible, true = ya reclamada
+     * Mapa de medallas reclamables (ej: medalla especial de live).
+     * Key: badgeId único (ej: "evento-abc123-primero")
+     * Value: AtomicBoolean — false=disponible, true=ya reclamada
      */
     private final ConcurrentHashMap<String, AtomicBoolean> pendingBadges = new ConcurrentHashMap<>();
 
@@ -45,76 +28,95 @@ public class BadgeService {
         this.badgeRepository = badgeRepository;
     }
 
-    /**
-     * Registra una medalla como disponible para ser reclamada.
-     * Debe llamarse cuando se crea un evento/reto que ofrece una medalla.
-     *
-     * @param badgeId Identificador unico de esta medalla (ej: "evento-123-primero")
-     */
+    // ── Medalla reclamable (live especial) ───────────────────
+
     public void makeBadgeAvailable(String badgeId) {
         pendingBadges.put(badgeId, new AtomicBoolean(false));
         log.info("Medalla {} disponible para reclamar", badgeId);
     }
 
     /**
-     * Intenta reclamar una medalla para un usuario.
-     * Garantia atomica: solo el primer llamado con este badgeId retorna true.
-     *
-     * @param badgeId ID de la medalla a reclamar
-     * @param userId  ID del usuario que intenta reclamarla
-     * @param tipo    Tipo de medalla (PRIMER_LOGRO, INSCRIPCION_EVENTO, etc.)
-     * @param nombre  Nombre descriptivo de la medalla
-     * @return true si el usuario fue el primero y obtuvo la medalla, false si ya fue reclamada
+     * Reclamar medalla especial de live.
+     * Solo el primer usuario que llame con este badgeId la obtiene.
+     * Garantía atómica con compareAndSet.
      */
     public boolean claimBadge(String badgeId, String userId, String tipo, String nombre) {
         AtomicBoolean claimed = pendingBadges.get(badgeId);
-
         if (claimed == null) {
-            log.warn("Intento de reclamar medalla inexistente: {}", badgeId);
+            log.warn("Medalla inexistente o ya reclamada: {}", badgeId);
             return false;
         }
 
-        // Operacion atomica: solo el PRIMER thread que llega pasa a true
         boolean ganador = claimed.compareAndSet(false, true);
-
         if (ganador) {
-            // Este usuario fue el primero — persistir la medalla
-            Badge badge = new Badge(
-                    UUID.randomUUID().toString(),
-                    userId,
-                    tipo,
-                    nombre,
-                    "Medalla obtenida por logro: " + nombre,
-                    LocalDateTime.now()
-            );
-            badgeRepository.save(badge);
-            log.info("Usuario {} reclamó la medalla '{}' (badgeId: {})", userId, nombre, badgeId);
-            // Limpiar del mapa para liberar memoria (ya fue reclamada)
+            // Verificar que este usuario no tenga ya esta medalla específica
+            String desc = "Medalla obtenida por logro: " + nombre;
+            if (!badgeRepository.existsByUserIdAndTipoAndDescripcion(userId, tipo, desc)) {
+                Badge badge = new Badge(
+                        UUID.randomUUID().toString(), userId, tipo, nombre,
+                        desc, LocalDateTime.now()
+                );
+                badgeRepository.save(badge);
+                log.info("Usuario {} obtuvo medalla '{}' (badgeId: {})", userId, nombre, badgeId);
+            }
             pendingBadges.remove(badgeId);
         } else {
-            log.info("Usuario {} intento reclamar medalla {} pero ya fue reclamada", userId, badgeId);
+            log.info("Usuario {} intentó reclamar {} pero ya fue reclamada", userId, badgeId);
         }
-
         return ganador;
     }
 
+    // ── Medalla automática (registro, inscripción, reto) ────
+
     /**
-     * Otorga una medalla directamente a un usuario sin race condition
-     * (para logros automaticos como primer registro, unirse a un reto, etc.)
+     * Otorga una medalla automática SOLO si el usuario NO la tiene aún.
+     *
+     * Reglas:
+     * - PRIMER_LOGRO: solo 1 por usuario total
+     * - INSCRIPCION_EVENTO: solo 1 por usuario total (la primera inscripción)
+     * - UNIRSE_RETO: solo 1 por usuario total (el primer reto)
+     * - COMPLETAR_RETO: 1 por reto completado (descripción única por reto)
+     * - ESPECTADOR_VIP: manejada por claimBadge
      */
     public Badge awardBadge(String userId, String tipo, String nombre, String descripcion) {
+        // Para tipos de logro único (el usuario solo puede tenerlo una vez)
+        boolean esTipoUnico = tipo.equals("PRIMER_LOGRO")
+                || tipo.equals("INSCRIPCION_EVENTO")
+                || tipo.equals("UNIRSE_RETO");
+
+        if (esTipoUnico) {
+            // Solo puede tener UNA medalla de este tipo en toda su vida
+            if (badgeRepository.existsByUserIdAndTipo(userId, tipo)) {
+                log.info("Medalla {} ya existe para userId={}, ignorando", tipo, userId);
+                return badgeRepository.findFirstByUserIdAndTipo(userId, tipo).orElse(null);
+            }
+        } else {
+            // Para otros tipos (COMPLETAR_RETO, etc.) verificar descripción exacta
+            if (badgeRepository.existsByUserIdAndTipoAndDescripcion(userId, tipo, descripcion)) {
+                log.info("Medalla duplicada ignorada: userId={} tipo={}", userId, tipo);
+                return badgeRepository
+                        .findByUserIdAndTipoAndDescripcionContaining(userId, tipo, descripcion)
+                        .orElse(null);
+            }
+        }
+
         Badge badge = new Badge(
-                UUID.randomUUID().toString(),
-                userId,
-                tipo,
-                nombre,
-                descripcion,
-                LocalDateTime.now()
+                UUID.randomUUID().toString(), userId, tipo, nombre,
+                descripcion, LocalDateTime.now()
         );
         return badgeRepository.save(badge);
     }
 
-    /** Devuelve todos los logros de un usuario */
+    /**
+     * Elimina la medalla UNIRSE_RETO de un reto específico
+     * cuando el usuario sale sin completarlo.
+     */
+    public void removeBadgeForChallenge(String userId, String challengeName) {
+        String descripcion = "Medalla por unirse al reto: " + challengeName;
+        badgeRepository.deleteByUserIdAndTipoAndDescripcion(userId, "UNIRSE_RETO", descripcion);
+        log.info("Medalla UNIRSE_RETO eliminada: userId={} reto='{}'", userId, challengeName);
+    }
+
     public List<Badge> getUserBadges(String userId) {
         return badgeRepository.findByUserId(userId);
     }
