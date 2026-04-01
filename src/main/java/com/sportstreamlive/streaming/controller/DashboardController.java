@@ -94,8 +94,8 @@ public class DashboardController {
     @GetMapping("/{userId}/metas")
     public ResponseEntity<List<String>> getMetas(@PathVariable String userId) {
         return userProfileRepository.findByUserId(userId)
-                .map(p -> ResponseEntity.ok(p.getMetas() != null ? p.getMetas() : new ArrayList<>()))
-                .orElse(ResponseEntity.notFound().build());
+                .map(p -> ResponseEntity.ok(p.getMetas() != null ? p.getMetas() : new ArrayList<String>()))
+                .orElse(ResponseEntity.<List<String>>notFound().build());
     }
 
     /**
@@ -112,7 +112,7 @@ public class DashboardController {
                     profile.setMetas(request.metas() != null ? request.metas() : new ArrayList<>());
                     return ResponseEntity.ok(userProfileRepository.save(profile));
                 })
-                .orElse(ResponseEntity.notFound().build());
+                .orElse(ResponseEntity.<UserProfile>notFound().build());
     }
 
     /**
@@ -127,7 +127,7 @@ public class DashboardController {
 
         String texto = body.get("texto");
         if (texto == null || texto.isBlank()) {
-            return ResponseEntity.badRequest().build();
+            return ResponseEntity.<UserProfile>badRequest().build();
         }
 
         return userProfileRepository.findByUserId(userId)
@@ -136,7 +136,7 @@ public class DashboardController {
                     profile.getMetas().add(texto.trim());
                     return ResponseEntity.ok(userProfileRepository.save(profile));
                 })
-                .orElse(ResponseEntity.notFound().build());
+                .orElse(ResponseEntity.<UserProfile>notFound().build());
     }
 
     /**
@@ -147,16 +147,19 @@ public class DashboardController {
     public ResponseEntity<UserProfile> deleteMeta(
             @PathVariable String userId,
             @PathVariable int index) {
-        return userProfileRepository.findByUserId(userId)
-                .map(profile -> {
-                    List<String> metas = profile.getMetas();
-                    if (metas == null || index < 0 || index >= metas.size()) {
-                        return ResponseEntity.<UserProfile>badRequest().build();
-                    }
-                    metas.remove(index);
-                    return ResponseEntity.ok(userProfileRepository.save(profile));
-                })
-                .orElse(ResponseEntity.notFound().build());
+        var profileOpt = userProfileRepository.findByUserId(userId);
+        if (profileOpt.isEmpty()) {
+            return ResponseEntity.<UserProfile>notFound().build();
+        }
+
+        UserProfile profile = profileOpt.get();
+        List<String> metas = profile.getMetas();
+        if (metas == null || index < 0 || index >= metas.size()) {
+            return ResponseEntity.<UserProfile>badRequest().build();
+        }
+
+        metas.remove(index);
+        return ResponseEntity.ok(userProfileRepository.save(profile));
     }
 
     public record MetasRequest(List<String> metas) {}
