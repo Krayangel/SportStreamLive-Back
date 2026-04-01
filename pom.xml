@@ -19,6 +19,8 @@
 		<java.version>21</java.version>
 		<jjwt.version>0.11.5</jjwt.version>
 		<lombok.version>1.18.32</lombok.version>
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 	</properties>
 
 	<dependencies>
