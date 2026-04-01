@@ -69,7 +69,7 @@ public class ChatController {
         // Persistir en MongoDB
         ChatMessage saved = chatMessageRepository.save(message);
 
-        // Guardar en cola en memoria (thread-safe)
+        // Guardar en cola en memoria 
         chatRooms.computeIfAbsent(roomId, k -> new ConcurrentLinkedQueue<>()).add(saved);
 
         // Broadcast a todos los suscritos al room
