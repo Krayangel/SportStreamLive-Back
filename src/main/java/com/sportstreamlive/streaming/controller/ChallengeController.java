@@ -1,7 +1,6 @@
 package com.sportstreamlive.streaming.controller;
 
 import com.sportstreamlive.streaming.model.Challenge;
-import com.sportstreamlive.streaming.model.UserProfile;
 import com.sportstreamlive.streaming.repository.ChallengeRepository;
 import com.sportstreamlive.streaming.repository.UserProfileRepository;
 import com.sportstreamlive.streaming.service.BadgeService;
@@ -116,14 +115,14 @@ public class ChallengeController {
 
         String texto = body.get("texto");
         if (texto == null || texto.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.<String, Object>of("error", "El texto es obligatorio"));
+            return ResponseEntity.badRequest().body(Map.of("error", "El texto es obligatorio"));
         }
 
         return challengeRepository.findById(id)
                 .map(challenge -> {
                     if (!challenge.getParticipantes().contains(userId)) {
-                        return ResponseEntity.<Map<String, Object>>status(403)
-                                .body(Map.<String, Object>of("error", "No eres participante"));
+                        Map<String, Object> error = Map.of("error", "No eres participante");
+                        return ResponseEntity.status(403).body(error);
                     }
 
                     String hoy = LocalDate.now().toString(); // "yyyy-MM-dd"
@@ -167,7 +166,7 @@ public class ChallengeController {
                             "xpGanado", completado ? challenge.getXpRecompensa() : 0
                     ));
                 })
-                .orElse(ResponseEntity.<Map<String, Object>>notFound().build());
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     /**
@@ -199,14 +198,14 @@ public class ChallengeController {
 
         String texto = body.get("texto");
         if (texto == null || texto.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.<String, Object>of("error", "Texto obligatorio"));
+            return ResponseEntity.badRequest().body(Map.of("error", "Texto obligatorio"));
         }
 
         return challengeRepository.findById(id)
                 .map(challenge -> {
                     if (!challenge.getParticipantes().contains(userId)) {
-                        return ResponseEntity.<Map<String, Object>>status(403)
-                                .body(Map.<String, Object>of("error", "No eres participante"));
+                        Map<String, Object> error = Map.of("error", "No eres participante");
+                        return ResponseEntity.status(403).body(error);
                     }
                     String entrada = "[" + LocalDate.now() + "] " + texto.trim();
                     challenge.getEvidencias()
@@ -219,7 +218,7 @@ public class ChallengeController {
                             "total", challenge.getEvidencias().get(userId).size()
                     ));
                 })
-                .orElse(ResponseEntity.<Map<String, Object>>notFound().build());
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     /**
