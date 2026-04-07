@@ -94,8 +94,8 @@ public class DashboardController {
     @GetMapping("/{userId}/metas")
     public ResponseEntity<List<String>> getMetas(@PathVariable String userId) {
         return userProfileRepository.findByUserId(userId)
-                .map(p -> ResponseEntity.ok(p.getMetas() != null ? p.getMetas() : new ArrayList<>()))
-                .orElse(ResponseEntity.notFound().build());
+                .map(p -> ResponseEntity.<List<String>>ok(p.getMetas() != null ? p.getMetas() : new ArrayList<>()))
+                .orElseGet(() -> ResponseEntity.notFound().build());
     }
 
     /**
@@ -147,16 +147,17 @@ public class DashboardController {
     public ResponseEntity<UserProfile> deleteMeta(
             @PathVariable String userId,
             @PathVariable int index) {
-        return userProfileRepository.findByUserId(userId)
-                .map(profile -> {
-                    List<String> metas = profile.getMetas();
-                    if (metas == null || index < 0 || index >= metas.size()) {
-                        return ResponseEntity.<UserProfile>badRequest().build();
-                    }
-                    metas.remove(index);
-                    return ResponseEntity.ok(userProfileRepository.save(profile));
-                })
-                .orElse(ResponseEntity.notFound().build());
+        var optional = userProfileRepository.findByUserId(userId);
+        if (optional.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        UserProfile profile = optional.get();
+        List<String> metas = profile.getMetas();
+        if (metas == null || index < 0 || index >= metas.size()) {
+            return ResponseEntity.badRequest().build();
+        }
+        metas.remove(index);
+        return ResponseEntity.ok(userProfileRepository.save(profile));
     }
 
     public record MetasRequest(List<String> metas) {}

@@ -4,17 +4,23 @@ import com.sportstreamlive.streaming.model.Badge;
 import com.sportstreamlive.streaming.service.BadgeService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * E6 - Logros: Ver medallas y "Atrapar Medalla" concurrencia.
  *
- * El endpoint /claim implementa el patron atomic badge-claim:
- * Solo el primer usuario que llame obtiene la medalla.
- * Los demas reciben un 409 Conflict.
+ * Flujo de medalla lanzada en vivo:
+ *  1. Streamer llama POST /api/badges/{streamId}/launch
+ *  2. El back registra la medalla como disponible (makeBadgeAvailable)
+ *     y la transmite por WebSocket a /topic/badges/{streamId}
+ *  3. Los espectadores reciben el evento y muestran el boton "Atrapar"
+ *  4. El primero en llamar POST /api/badges/{badgeId}/claim gana (atomico)
+ *  5. Los demas reciben 409 Conflict
  */
 @RestController
 @RequestMapping("/api/badges")
@@ -22,6 +28,7 @@ import java.util.Map;
 public class BadgeController {
 
     private final BadgeService badgeService;
+    private final SimpMessagingTemplate messagingTemplate;
 
     /** GET /api/badges/{userId} — Ver todos los logros de un usuario */
     @GetMapping("/{userId}")
@@ -30,10 +37,43 @@ public class BadgeController {
     }
 
     /**
+     * POST /api/badges/{streamId}/launch
+     * El streamer lanza una medalla durante el live.
+     * Se genera un badgeId unico, se registra como disponible
+     * y se notifica a todos los espectadores via WebSocket.
+     *
+     * Body: { "userId": "...", "tipo": "MEDALLA_LIVE", "nombre": "Velocista" }
+     *
+     * Solo el owner del stream deberia llamar este endpoint.
+     */
+    @PostMapping("/{streamId}/launch")
+    public ResponseEntity<Map<String, Object>> launchBadge(
+            @PathVariable String streamId,
+            @RequestBody LaunchRequest request) {
+
+        String badgeId = streamId + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        badgeService.makeBadgeAvailable(badgeId);
+
+        Map<String, Object> payload = Map.of(
+                "action", "LAUNCHED",
+                "badgeId", badgeId,
+                "tipo", request.tipo(),
+                "nombre", request.nombre(),
+                "streamId", streamId
+        );
+        messagingTemplate.convertAndSend("/topic/badges/" + streamId, payload);
+
+        return ResponseEntity.ok(Map.of(
+                "badgeId", badgeId,
+                "message", "Medalla lanzada: " + request.nombre()
+        ));
+    }
+
+    /**
      * POST /api/badges/{badgeId}/claim
      * "Atrapar Medalla" — Solo el primero gana.
      *
-     * Body: { "userId": "...", "tipo": "PRIMER_LOGRO", "nombre": "Veloz" }
+     * Body: { "userId": "...", "tipo": "MEDALLA_LIVE", "nombre": "Velocista" }
      *
      * Retorna:
      * 200 OK -> Este usuario fue el ganador
@@ -58,6 +98,6 @@ public class BadgeController {
         }
     }
 
-    public record ClaimRequest(String userId, String tipo, String nombre) {
-    }
+    public record LaunchRequest(String userId, String tipo, String nombre) {}
+    public record ClaimRequest(String userId, String tipo, String nombre) {}
 }

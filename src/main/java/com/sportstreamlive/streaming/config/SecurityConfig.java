@@ -1,8 +1,10 @@
 package com.sportstreamlive.streaming.config;
 
 import com.sportstreamlive.streaming.security.JwtFilter;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -47,8 +49,18 @@ public class SecurityConfig {
                 .requestMatchers("/ws/**").permitAll()
                 // Frontend estatico (index.html de prueba)
                 .requestMatchers("/", "/index.html", "/*.js", "/*.css").permitAll()
+                // Preflight CORS: OPTIONS siempre permitido
+                .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 // Todo lo demas requiere autenticacion
                 .anyRequest().authenticated()
+            )
+            // JWT no autenticado → 401 (no 403) para que el front redirija al login
+            .exceptionHandling(ex -> ex
+                .authenticationEntryPoint((req, res, e) -> {
+                    res.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                    res.setContentType("application/json");
+                    res.getWriter().write("{\"error\":\"Unauthorized\"}");
+                })
             )
             // JWT filter antes del filtro de usuario/password de Spring
             .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);

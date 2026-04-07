@@ -11,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -48,7 +49,7 @@ public class AuthController {
         User saved = userRepository.save(user);
 
         // Crear perfil inicial
-        UserProfile profile = new UserProfile(null, saved.getId(), 0, 0, "");
+        UserProfile profile = new UserProfile(null, saved.getId(), 0, null, 0, new ArrayList<>());
         userProfileRepository.save(profile);
 
         // Medalla por primer registro
