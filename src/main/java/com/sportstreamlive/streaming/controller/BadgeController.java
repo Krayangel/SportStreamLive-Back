@@ -2,9 +2,11 @@ package com.sportstreamlive.streaming.controller;
 
 import com.sportstreamlive.streaming.model.Badge;
 import com.sportstreamlive.streaming.service.BadgeService;
+import com.sportstreamlive.streaming.service.StreamSessionManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -29,6 +31,7 @@ public class BadgeController {
 
     private final BadgeService badgeService;
     private final SimpMessagingTemplate messagingTemplate;
+    private final StreamSessionManager streamSessionManager;
 
     /** GET /api/badges/{userId} — Ver todos los logros de un usuario */
     @GetMapping("/{userId}")
@@ -50,6 +53,32 @@ public class BadgeController {
     public ResponseEntity<Map<String, Object>> launchBadge(
             @PathVariable String streamId,
             @RequestBody LaunchRequest request) {
+
+        // Validar que streamId y userId estén presentes
+        if (!StringUtils.hasText(streamId) || !StringUtils.hasText(request.userId())) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "INVALID_REQUEST",
+                    "message", "streamId y userId son requeridos"
+            ));
+        }
+
+        // Validar que el usuario es el owner del stream activo
+        String streamOwner = streamSessionManager.getStreamOwner(streamId);
+        if (streamOwner == null) {
+            return ResponseEntity.status(404).body(Map.of(
+                    "error", "STREAM_NOT_FOUND",
+                    "message", "El stream " + streamId + " no existe o no esta activo"
+            ));
+        }
+
+        if (!streamOwner.equals(request.userId())) {
+            return ResponseEntity.status(403).body(Map.of(
+                    "error", "FORBIDDEN",
+                    "message", "Solo el owner del stream puede lanzar medallas",
+                    "owner", streamOwner,
+                    "requester", request.userId()
+            ));
+        }
 
         String badgeId = streamId + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         badgeService.makeBadgeAvailable(badgeId);
