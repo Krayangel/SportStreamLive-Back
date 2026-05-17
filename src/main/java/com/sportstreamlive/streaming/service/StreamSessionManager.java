@@ -128,6 +128,16 @@ public class StreamSessionManager {
         return activeSessions.containsKey(streamId);
     }
 
+    /**
+     * Obtiene el ID del usuario (owner) que gestiona el stream.
+     * @param streamId ID del stream
+     * @return ID del usuario o null si el stream no existe/no está activo
+     */
+    public String getStreamOwner(String streamId) {
+        StreamSession session = activeSessions.get(streamId);
+        return session != null ? session.getUserId() : null;
+    }
+
     public List<ActiveStreamView> getActiveStreams() {
         return activeSessions.values().stream()
                 .map(session -> new ActiveStreamView(session.getStreamId(), session.getUserId()))

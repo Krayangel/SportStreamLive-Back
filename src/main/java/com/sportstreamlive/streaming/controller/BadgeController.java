@@ -5,6 +5,8 @@ import com.sportstreamlive.streaming.service.BadgeService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.security.core.Authentication;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -39,27 +41,35 @@ public class BadgeController {
     /**
      * POST /api/badges/{streamId}/launch
      * El streamer lanza una medalla durante el live.
-     * Se genera un badgeId unico, se registra como disponible
-     * y se notifica a todos los espectadores via WebSocket.
+     * El userId se extrae del JWT (verificado por Spring Security),
+     * no del body, para evitar dependencia de estado en memoria.
      *
-     * Body: { "userId": "...", "tipo": "MEDALLA_LIVE", "nombre": "Velocista" }
-     *
-     * Solo el owner del stream deberia llamar este endpoint.
+     * Body: { "tipo": "MEDALLA_LIVE", "nombre": "Velocista" }
      */
     @PostMapping("/{streamId}/launch")
     public ResponseEntity<Map<String, Object>> launchBadge(
             @PathVariable String streamId,
-            @RequestBody LaunchRequest request) {
+            @RequestBody LaunchRequest request,
+            Authentication auth) {
 
+        if (!StringUtils.hasText(streamId)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "INVALID_REQUEST",
+                    "message", "streamId es requerido"
+            ));
+        }
+
+        String userId = auth.getName(); // viene del JWT, ya validado por Spring Security
         String badgeId = streamId + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         badgeService.makeBadgeAvailable(badgeId);
 
         Map<String, Object> payload = Map.of(
                 "action", "LAUNCHED",
                 "badgeId", badgeId,
-                "tipo", request.tipo(),
-                "nombre", request.nombre(),
-                "streamId", streamId
+                "tipo", request.tipo() != null ? request.tipo() : "",
+                "nombre", request.nombre() != null ? request.nombre() : "",
+                "streamId", streamId,
+                "launchedBy", userId
         );
         messagingTemplate.convertAndSend("/topic/badges/" + streamId, payload);
 
@@ -98,6 +108,6 @@ public class BadgeController {
         }
     }
 
-    public record LaunchRequest(String userId, String tipo, String nombre) {}
+    public record LaunchRequest(String tipo, String nombre) {}
     public record ClaimRequest(String userId, String tipo, String nombre) {}
 }
